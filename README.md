@@ -12,11 +12,22 @@ Esc - Exits settings
 
 Space - Cycles between radar distance scales (10km, 25km, 50km, 100km)
 
+Fn + arrow keys - Cycles between wifi networks
+
+Fn + Esc - Exits Wifi setup
+
 Features:
 Selecting flight blips will show Flight number, Flight reg, Airline, distance from flight (in km), Altitude, Verticle speed (VS), Heading (HDG), Airplane type and estimated seats (Estimated souls on board)
 
 Configuration:
 On first boot, a folder will be created called "adsb_radar" in the root of your SD Card, to store aircraft types and airlines, in .csv files, these can be edited to add more to support other regions, but note that these are cached on boot so be mindful of file sizes, once updated, and uploaded onto the folder, these will automatically be loaded on boot, along with wifi credentials (while not secure) they are also saved onto SD card for convenience.
+
+Scanning for wifi networks might cause a hang, just reset and try again, it should work
+
+NeoPixel LED flash meaning:
+White flash - This means the ADV is fetching updates from the adsb.fi API
+Green flash - By default this is just a cosmetic feature when the heading is 0 degrees
+Green, Amber, Yellow, Blue - Proximity alerts, this indicates that a plane is nearby and as the flash progresses, the plane is approaching visibility
 
 INSTALLATION:
 To install, there is a downloadable .bin in the release section of this repository, or an even easier approach would be to download and flash from M5Burner or LaucnherHUB on Launcher on your ADV, by searching for "ADV-S Flight Radar" (I am aware that it's ADS-B, but I wanted to try some wordplay with the ADV and ADS, and mixed up the S and B in the process).
