@@ -38,6 +38,8 @@ void beginConnect() {
     String ssid = prefs.getString("ssid", "");
     String pass = prefs.getString("pass", "");
 
+    WiFi.scanDelete();           // release any leftover scan state before connecting
+    WiFi.disconnect(true, true); // clean reset before (re)connecting
     WiFi.mode(WIFI_STA);
     WiFi.begin(ssid.c_str(), pass.c_str());
     connectStartMs = millis();

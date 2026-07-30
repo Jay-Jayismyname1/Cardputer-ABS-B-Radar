@@ -210,9 +210,7 @@ void render() {
 
         case Stage::EnterPassword:
             d.printf("SSID: %s\n\n", ssidList[selectedIndex].c_str());
-            d.print("Password: ");
-            for (uint8_t i = 0; i < passwordLen; i++) d.print('*');
-            d.println();
+            d.printf("Password: %s\n", passwordBuf);
             d.setTextColor(TFT_DARKGREEN);
             d.println("\nEnter to connect, Backspace to edit");
             d.println("Fn+Esc/` to cancel");

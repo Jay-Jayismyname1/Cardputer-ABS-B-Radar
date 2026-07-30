@@ -7,10 +7,10 @@ namespace Config {
 
     struct GpsPinPair { uint8_t rx; uint8_t tx; const char* label; };
     constexpr GpsPinPair GPS_PIN_CANDIDATES[] = {
-        {40, 14, "G40/G14"}, {39, 5, "G39/G5"}, {13, 15, "G13/G15"}, {3, 4, "G3/G4"}
+        {15, 13, "G15/G13 (GPS Cap)"}, {40, 14, "G40/G14"}, {39, 5, "G39/G5"}, {3, 4, "G3/G4"}
     };
     constexpr uint8_t GPS_PIN_CANDIDATE_COUNT = 4;
-    constexpr uint32_t GPS_BAUD = 9600;
+    constexpr uint32_t GPS_BAUD = 115200;
 
     constexpr float RANGE_STEPS_KM[] = {10.0f, 25.0f, 50.0f, 100.0f};
     constexpr uint8_t RANGE_STEP_COUNT = 4;
