@@ -31,6 +31,12 @@ namespace {
     bool sdReady = false;
     bool timePrimed = false;
 
+    // True from boot until the user has either connected to WiFi or
+    // cancelled out of the forced setup screen (see setup()/loop() below).
+    // While true, loop() shows the WiFi setup screen directly instead of
+    // the Radar screen - no need to go through Settings -> WiFi first.
+    bool forceWifiSetup = false;
+
     // --- Keyboard debounce ---
     // The Cardputer's key matrix chatters on contact, especially on combo
     // presses (Aa+letter for capitals), so isChange() can fire more than
@@ -172,6 +178,14 @@ void setup() {
         WifiMgr::beginConnect();
     } else if (WifiMgr::hasStoredCredentials()) {
         WifiMgr::beginConnect();
+    } else {
+        // No WiFi configured at all yet - no wifi.txt on the SD card, and
+        // nothing saved from a previous manual setup either. Force the
+        // WiFi setup screen straight away instead of silently sitting in
+        // WifiMgr::State::NoCredentials in the background until the user
+        // happens to open Settings themselves.
+        forceWifiSetup = true;
+        WifiSetupScreen::onEnter();
     }
 
     lastFrameMs = millis();
@@ -179,6 +193,48 @@ void setup() {
 
 void loop() {
     M5Cardputer.update();
+
+    if (forceWifiSetup) {
+        // Route all input/rendering straight to the WiFi setup screen -
+        // bypassing Radar and Settings entirely - until the user either
+        // connects successfully or cancels out (Esc/`). See
+        // wifi_setup_screen.cpp's handleWord()/isDone()/didConnectSucceed():
+        // Esc/` already means "cancel, back to radar regardless of stage",
+        // so cancelling here just means the radar screen starts in its
+        // usual "not connected" state, same as if this feature didn't exist.
+        bool keyChanged = M5Cardputer.Keyboard.isChange() && M5Cardputer.Keyboard.isPressed();
+        Keyboard_Class::KeysState status;
+        if (keyChanged) {
+            status = M5Cardputer.Keyboard.keysState();
+            keyChanged = acceptKeyEvent(status); // same debounce as everywhere else
+        }
+        if (keyChanged) {
+            char chars[16];
+            uint8_t charCount = 0;
+            for (auto c : status.word) {
+                if (charCount < sizeof(chars)) chars[charCount++] = c;
+            }
+            uint8_t hidKeys[16];
+            uint8_t hidCount = 0;
+            for (auto k : status.hid_keys) {
+                if (hidCount < sizeof(hidKeys)) hidKeys[hidCount++] = k;
+            }
+            WifiSetupScreen::handleWord(chars, charCount, status.fn, status.shift,
+                                         hidKeys, hidCount);
+        }
+
+        WifiSetupScreen::render();
+
+        if (WifiSetupScreen::isDone()) {
+            forceWifiSetup = false; // connected or cancelled - either way, start the app now
+        }
+
+        uint32_t nowFws = millis();
+        NeopixelStatus::tick(nowFws); // keep the idle LED animation alive here too
+        lastFrameMs = nowFws;
+        delay(16);
+        return; // skip the rest of loop() this frame - the app hasn't started yet
+    }
 
     bool keyChanged = M5Cardputer.Keyboard.isChange() && M5Cardputer.Keyboard.isPressed();
     Keyboard_Class::KeysState status;
