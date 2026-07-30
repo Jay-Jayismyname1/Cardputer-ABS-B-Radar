@@ -175,9 +175,9 @@ void setup() {
 
     // "Kinectputer-style" SD credential loading
     if (WifiMgr::loadCredentialsFromSd()) {
-        WifiMgr::beginConnect();
+        WifiMgr::beginAutoConnect(); // try every saved network in order, not just the first
     } else if (WifiMgr::hasStoredCredentials()) {
-        WifiMgr::beginConnect();
+        WifiMgr::beginAutoConnect();
     } else {
         // No WiFi configured at all yet - no wifi.txt on the SD card, and
         // nothing saved from a previous manual setup either. Force the

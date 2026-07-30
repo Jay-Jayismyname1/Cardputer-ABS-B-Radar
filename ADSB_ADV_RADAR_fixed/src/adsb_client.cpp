@@ -106,6 +106,7 @@ FetchResult fetch(double homeLat, double homeLon, float radiusKm,
     filterAc["flight"]   = true;
     filterAc["r"]        = true;   // registration
     filterAc["t"]        = true;   // type code
+    filterAc["squawk"]   = true;   // transponder code, for emergency (7500/7600/7700) detection
     filterAc["lat"]      = true;
     filterAc["lon"]      = true;
     filterAc["alt_baro"] = true;
@@ -143,6 +144,9 @@ FetchResult fetch(double homeLat, double homeLon, float radiusKm,
 
         const char* type = ac["t"] | "";
         strncpy(a.typeCode, type, sizeof(a.typeCode) - 1);
+
+        const char* squawk = ac["squawk"] | "";
+        strncpy(a.squawk, squawk, sizeof(a.squawk) - 1);
 
         a.lat = ac["lat"] | 0.0f;
         a.lon = ac["lon"] | 0.0f;
