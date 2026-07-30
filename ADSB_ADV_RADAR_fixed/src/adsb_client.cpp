@@ -3,6 +3,11 @@
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <time.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <freertos/semphr.h>
+#include <atomic>
+#include <string.h>
 
 namespace AdsbClient {
 
@@ -17,6 +22,39 @@ namespace {
     // session/connection be reused where the server supports it.
     WiFiClientSecure persistentClient;
     bool clientConfigured = false;
+
+    // --- Background task state --------------------------------------------
+    // The fetch task runs on core 0 and writes into workTable/workResult.
+    // The main loop (core 1) only ever reads them, and only after
+    // readyFlag is true - the task sets that flag last (with release
+    // ordering), so by the time the main loop sees it true (via an
+    // acquire load) the task is guaranteed done writing. That's a simple,
+    // race-free single-producer/single-consumer hand-off with no extra
+    // mutex needed, as long as only one fetch is ever in flight at a time
+    // (enforced by busyFlag).
+    TaskHandle_t fetchTaskHandle = nullptr;
+    SemaphoreHandle_t startSem = nullptr;
+
+    std::atomic<bool> busyFlag{false};
+    std::atomic<bool> readyFlag{false};
+
+    struct Request { double lat; double lon; float radiusKm; };
+    Request pendingRequest;
+
+    Aircraft workTable[Config::MAX_TRACKED_AIRCRAFT];
+    FetchResult workResult;
+
+    void fetchTaskFn(void*) {
+        for (;;) {
+            xSemaphoreTake(startSem, portMAX_DELAY);
+            // pendingRequest was fully written by requestFetch() strictly
+            // before it gave this semaphore, so it's safe to read here.
+            workResult = fetch(pendingRequest.lat, pendingRequest.lon,
+                                pendingRequest.radiusKm,
+                                workTable, Config::MAX_TRACKED_AIRCRAFT);
+            readyFlag.store(true, std::memory_order_release);
+        }
+    }
 }
 
 void primeTime() {
@@ -39,8 +77,6 @@ FetchResult fetch(double homeLat, double homeLon, float radiusKm,
 
     if (!clientConfigured) {
         persistentClient.setInsecure();
-        // Keep the underlying TCP/TLS session around between requests
-        // instead of tearing it down after every fetch.
         persistentClient.setTimeout(Config::HTTP_TIMEOUT_MS);
         clientConfigured = true;
     }
@@ -55,8 +91,6 @@ FetchResult fetch(double homeLat, double homeLon, float radiusKm,
     if (!http.begin(persistentClient, url)) {
         return result;
     }
-    // Ask the server to keep the connection open so the next fetch can
-    // reuse it instead of renegotiating TLS from scratch.
     http.setReuse(true);
 
     int code = http.GET();
@@ -132,6 +166,36 @@ FetchResult fetch(double homeLat, double homeLon, float radiusKm,
     result.ok = true;
     result.aircraftCount = idx;
     return result;
+}
+
+void startBackgroundTask() {
+    if (fetchTaskHandle) return; // already started
+    startSem = xSemaphoreCreateBinary();
+    xTaskCreatePinnedToCore(fetchTaskFn, "adsbFetch",
+                             12288, nullptr, 1, &fetchTaskHandle,
+                             0 /* core 0 - opposite the Arduino loop task */);
+}
+
+bool requestFetch(double homeLat, double homeLon, float radiusKm) {
+    if (busyFlag.load(std::memory_order_acquire)) return false;
+    pendingRequest = { homeLat, homeLon, radiusKm };
+    busyFlag.store(true, std::memory_order_release);
+    xSemaphoreGive(startSem);
+    return true;
+}
+
+bool resultReady() {
+    return readyFlag.load(std::memory_order_acquire);
+}
+
+FetchResult consumeResult(Aircraft* outTable, uint8_t outCapacity) {
+    FetchResult r = workResult;
+    uint8_t n = outCapacity < Config::MAX_TRACKED_AIRCRAFT
+                    ? outCapacity : Config::MAX_TRACKED_AIRCRAFT;
+    memcpy(outTable, workTable, n * sizeof(Aircraft));
+    readyFlag.store(false, std::memory_order_release);
+    busyFlag.store(false, std::memory_order_release);
+    return r;
 }
 
 }

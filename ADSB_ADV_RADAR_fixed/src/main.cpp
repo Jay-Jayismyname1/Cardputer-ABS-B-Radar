@@ -21,6 +21,13 @@ namespace {
     uint8_t selectedIndex = 0;
     int lastHttpCode = 0;
 
+    // Coordinates the background fetch task was last kicked off with -
+    // remembered here because postFetchUpdate() (bearing/distance calc)
+    // needs to use the *same* home position the fetch was made for, not
+    // whatever LocationManager reports at the moment the result happens
+    // to arrive.
+    double lastFetchHomeLat = 0.0, lastFetchHomeLon = 0.0;
+
     bool sdReady = false;
     bool timePrimed = false;
 
@@ -147,6 +154,12 @@ void setup() {
     SettingsMenu::init();
     LocationManager::init();
 
+    // Starts the background FreeRTOS task (pinned to core 0) that
+    // AdsbClient::requestFetch()/resultReady()/consumeResult() talk to
+    // below. It just sits idle until the first requestFetch() call, so
+    // it's safe to start this before WiFi is even connected.
+    AdsbClient::startBackgroundTask();
+
     sdReady = SdStorage::init();
     if (sdReady) {
         SdStorage::seedDefaultDataFiles();
@@ -209,43 +222,62 @@ void loop() {
 
     uint32_t now = millis();
 
+    // Kick off a new fetch on the interval tick. This used to call
+    // AdsbClient::fetch() directly and block right here for the whole
+    // TLS+HTTP+JSON-parse duration (a couple of seconds) - and because
+    // DisplayRadar::tickSweep()/render() further down only run *after*
+    // this point in the same loop() iteration, that blocking call is
+    // exactly what froze the sweep/UI every FETCH_INTERVAL_MS. Now
+    // requestFetch() just hands the request to a background task on core
+    // 0 and returns immediately; loop() keeps ticking the sweep/rendering
+    // every frame while the fetch runs in parallel. The result is picked
+    // up below, whenever it's actually ready.
     if (screenMode == ScreenMode::Radar &&
         WifiMgr::getState() == WifiMgr::State::Connected &&
         now - lastFetchMs >= Config::FETCH_INTERVAL_MS) {
-        lastFetchMs = now;
 
-        double homeLat = 0.0, homeLon = 0.0;
-        // NOTE: previously this did an early `return` here when no location
-        // fix was available yet, which skipped the *entire* rest of loop()
-        // every frame - including NeopixelStatus::tick()/notifySweepAngle()
-        // and DisplayRadar::render(). That's why the LED (and the sweep)
-        // could look completely dead before a GPS/IP fix came in. Now we
-        // just skip the fetch itself and let the rest of the loop keep running.
         if (LocationManager::currentSource() != LocationManager::Source::None) {
+            double homeLat = 0.0, homeLon = 0.0;
             LocationManager::getHomeLocation(homeLat, homeLon);
 
-            // fetch() is a blocking HTTP call and can take a couple seconds
-            // (TLS + request + JSON parse), which otherwise reads as a UI
-            // freeze. Flash the LED white for the duration instead of an
-            // on-screen "FETCHING..." label, so the radar view stays clean —
-            // the sweep/keys are still paused during the call itself.
-            NeopixelStatus::flashFetching();
-
-            auto result = AdsbClient::fetch(homeLat, homeLon,
-                                             DisplayRadar::currentRangeKm(),
-                                             AircraftTable::raw(), AircraftTable::capacity());
-            lastHttpCode = result.httpCode;
-
-            if (result.ok) {
-                AircraftTable::postFetchUpdate(homeLat, homeLon);
-                if (selectedIndex >= AircraftTable::validCount()) selectedIndex = 0;
+            if (AdsbClient::requestFetch(homeLat, homeLon, DisplayRadar::currentRangeKm())) {
+                lastFetchMs = now;
+                lastFetchHomeLat = homeLat;
+                lastFetchHomeLon = homeLon;
+                NeopixelStatus::flashFetching();
             }
+            // If requestFetch() returns false, the previous fetch is still
+            // in flight (shouldn't normally happen at this interval) - we
+            // simply leave lastFetchMs alone and try again next frame
+            // instead of silently skipping a whole cycle.
+        } else {
+            lastFetchMs = now; // no fix yet - nothing to fetch, wait for the next tick
+
+            // Un-gated from having a fix at all: even with no fix yet, this
+            // still needs to run on the same cadence so headingBeaconArmed
+            // gets set and the idle green heading-beacon flash has a chance
+            // to fire instead of staying permanently unset/dark.
+            NeopixelStatus::update(AircraftTable::raw(), AircraftTable::validCount(),
+                                    AircraftTable::validCount() > 0 ? (int)selectedIndex : -1);
+        }
+    }
+
+    // Pick up a finished background fetch's result, whenever it completes.
+    // Checked every loop() iteration (a couple of atomic-bool reads - cheap)
+    // rather than only on the interval tick, since the fetch is now
+    // asynchronous and can finish at any point between ticks.
+    if (AdsbClient::resultReady()) {
+        auto result = AdsbClient::consumeResult(AircraftTable::raw(), AircraftTable::capacity());
+        lastHttpCode = result.httpCode;
+
+        if (result.ok) {
+            AircraftTable::postFetchUpdate(lastFetchHomeLat, lastFetchHomeLon);
+            if (selectedIndex >= AircraftTable::validCount()) selectedIndex = 0;
         }
 
-        // Un-gated from `result.ok`: even with no fix yet, or a failed/empty
-        // fetch, this still needs to run so headingBeaconArmed gets set and
-        // the idle green heading-beacon flash (LED) has a chance to fire
-        // instead of staying permanently unset/dark.
+        // Un-gated from `result.ok`, same as before: needs to run even on a
+        // failed/empty fetch so headingBeaconArmed gets set and the idle
+        // green heading-beacon flash isn't left permanently dark.
         NeopixelStatus::update(AircraftTable::raw(), AircraftTable::validCount(),
                                 AircraftTable::validCount() > 0 ? (int)selectedIndex : -1);
     }
