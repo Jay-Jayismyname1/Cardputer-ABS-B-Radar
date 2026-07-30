@@ -13,11 +13,26 @@ namespace {
     // meant Esc/cancel silently did nothing here. '`' is checked below too.
     constexpr uint8_t HID_ESC = 0x29;
 
+    // How long the "Connected!"/"Connection failed." message stays on
+    // screen before automatically returning to the settings menu. Without
+    // this, the screen only advanced past Stage::Done when a keypress
+    // happened to trigger the isDone() check in settings_menu.cpp - so it
+    // looked "stuck" on Returning... until you mashed a key.
+    constexpr uint32_t DONE_DISPLAY_MS = 1500;
+    uint32_t doneEnteredMs = 0;
+
     enum class Stage { Scanning, PickSsid, EnterPassword, Connecting, Done };
     Stage stage = Stage::Scanning;
 
-    constexpr uint8_t MAX_LIST = 10;
+    // Raised from 10: in a crowded area (very common) the old 10-network
+    // cap, combined with no sorting, could silently drop your own network
+    // out of the list purely because of scan order - not signal strength.
+    constexpr uint8_t MAX_LIST = 24;
+    // Only this many rows fit on screen at once - the list scrolls around
+    // selectedIndex when there are more results than this.
+    constexpr uint8_t VISIBLE_ROWS = 7;
     String ssidList[MAX_LIST];
+    int32_t ssidRssi[MAX_LIST];
     int8_t ssidCount = 0;
     int8_t selectedIndex = 0;
 
@@ -30,6 +45,68 @@ namespace {
     bool hasHid(const uint8_t* keys, uint8_t count, uint8_t code) {
         for (uint8_t i = 0; i < count; i++) if (keys[i] == code) return true;
         return false;
+    }
+
+    // Builds ssidList/ssidRssi from the raw scan results: skips blank
+    // (hidden) SSIDs, merges duplicate SSIDs (mesh/repeater setups that
+    // broadcast the same name from multiple access points) keeping the
+    // strongest signal, and - if there are more distinct networks than
+    // MAX_LIST - keeps the strongest ones rather than whatever happened to
+    // be found first. Finally sorts strongest-first so the networks you're
+    // most likely to want are at the top of the (scrollable) list.
+    void collectScanResults() {
+        ssidCount = 0;
+        int rawCount = WifiMgr::getScanResultCount();
+
+        for (int i = 0; i < rawCount; i++) {
+            String ssid = WifiMgr::getScanResultSSID(i);
+            if (ssid.length() == 0) continue; // hidden/blank SSID
+            int32_t rssi = WifiMgr::getScanResultRSSI(i);
+
+            bool merged = false;
+            for (int8_t j = 0; j < ssidCount; j++) {
+                if (ssidList[j] == ssid) {
+                    if (rssi > ssidRssi[j]) ssidRssi[j] = rssi;
+                    merged = true;
+                    break;
+                }
+            }
+            if (merged) continue;
+
+            if (ssidCount < MAX_LIST) {
+                ssidList[ssidCount] = ssid;
+                ssidRssi[ssidCount] = rssi;
+                ssidCount++;
+            } else {
+                // List is full - only bump the weakest entry if this new
+                // network is stronger, so a crowded area doesn't silently
+                // drop a strong nearby network just because it was found
+                // late in the scan.
+                int8_t weakestIdx = 0;
+                for (int8_t j = 1; j < ssidCount; j++) {
+                    if (ssidRssi[j] < ssidRssi[weakestIdx]) weakestIdx = j;
+                }
+                if (rssi > ssidRssi[weakestIdx]) {
+                    ssidList[weakestIdx] = ssid;
+                    ssidRssi[weakestIdx] = rssi;
+                }
+            }
+        }
+
+        // Simple insertion sort, strongest signal first - ssidCount is
+        // small (<= MAX_LIST) so this is plenty fast enough.
+        for (int8_t i = 1; i < ssidCount; i++) {
+            String keySsid = ssidList[i];
+            int32_t keyRssi = ssidRssi[i];
+            int8_t j = i - 1;
+            while (j >= 0 && ssidRssi[j] < keyRssi) {
+                ssidList[j + 1] = ssidList[j];
+                ssidRssi[j + 1] = ssidRssi[j];
+                j--;
+            }
+            ssidList[j + 1] = keySsid;
+            ssidRssi[j + 1] = keyRssi;
+        }
     }
 }
 
@@ -158,20 +235,27 @@ void render() {
 
     // Poll transitions that don't come from keyboard input.
     if (stage == Stage::Scanning && WifiMgr::isScanComplete()) {
-        ssidCount = min((int)WifiMgr::getScanResultCount(), (int)MAX_LIST);
-        for (int8_t i = 0; i < ssidCount; i++) ssidList[i] = WifiMgr::getScanResultSSID(i);
-        stage = ssidCount > 0 ? Stage::PickSsid : Stage::PickSsid; // empty list still shows a message
+        collectScanResults();
+        selectedIndex = 0;
+        stage = Stage::PickSsid; // empty list still shows a message
     }
     if (stage == Stage::Connecting) {
         WifiMgr::update();
         if (WifiMgr::getState() == WifiMgr::State::Connected) {
             connectSucceeded = true;
             stage = Stage::Done;
-            done = true;
+            doneEnteredMs = millis();
         } else if (WifiMgr::getState() == WifiMgr::State::Failed) {
             stage = Stage::Done;
-            done = true; // back to radar; main.cpp can decide to retry later
+            doneEnteredMs = millis();
         }
+    }
+    if (stage == Stage::Done && millis() - doneEnteredMs >= DONE_DISPLAY_MS) {
+        // Auto-advance after the message has had time to be read - no
+        // keypress required (previously this only ever flipped `done` the
+        // instant we entered Stage::Done, but nothing polled isDone() until
+        // the next keystroke, so the screen looked stuck on "Returning...").
+        done = true;
     }
 
     d.fillScreen(TFT_BLACK);
@@ -194,7 +278,15 @@ void render() {
                 d.println("No networks found.");
                 d.println("Esc/` to go back.");
             } else {
-                for (int8_t i = 0; i < ssidCount; i++) {
+                int8_t windowStart = 0;
+                if (ssidCount > VISIBLE_ROWS) {
+                    windowStart = selectedIndex - VISIBLE_ROWS / 2;
+                    if (windowStart < 0) windowStart = 0;
+                    if (windowStart > ssidCount - VISIBLE_ROWS) windowStart = ssidCount - VISIBLE_ROWS;
+                }
+                int8_t windowEnd = min((int)ssidCount, (int)(windowStart + VISIBLE_ROWS));
+
+                for (int8_t i = windowStart; i < windowEnd; i++) {
                     if (i == selectedIndex) {
                         d.setTextColor(TFT_BLACK, TFT_GREEN);
                     } else {
@@ -204,7 +296,12 @@ void render() {
                 }
                 d.setTextColor(TFT_DARKGREEN, TFT_BLACK);
                 d.println("");
-                d.println("Fn+; / Fn+. to move, Enter to select");
+                if (ssidCount > VISIBLE_ROWS) {
+                    d.printf("%d/%d  Fn+;/Fn+. move, Enter select\n",
+                             selectedIndex + 1, ssidCount);
+                } else {
+                    d.println("Fn+; / Fn+. to move, Enter to select");
+                }
             }
             break;
 

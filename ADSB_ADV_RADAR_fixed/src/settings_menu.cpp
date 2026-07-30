@@ -267,6 +267,16 @@ void handleWord(const char* chars, uint8_t count, bool fnHeld, bool shiftHeld,
 void render() {
     if (inWifiSubscreen) {
         WifiSetupScreen::render();
+        // Poll here too, not just in handleWord() - otherwise the screen
+        // only leaves Stage::Done (and returns to this menu) the next time
+        // a key happens to be pressed, which looked like it was stuck on
+        // "Returning..." forever.
+        if (WifiSetupScreen::isDone()) {
+            if (WifiSetupScreen::didConnectSucceed()) {
+                WifiMgr::saveCredentialsToSdIfMounted();
+            }
+            inWifiSubscreen = false;
+        }
         return;
     }
 

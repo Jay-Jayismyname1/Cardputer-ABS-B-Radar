@@ -4,6 +4,7 @@
 #include <WiFi.h>
 #include <Preferences.h>
 #include <SD.h>
+#include <esp_wifi.h>
 
 namespace WifiMgr {
 
@@ -18,6 +19,20 @@ namespace {
 void init() {
     prefs.begin("adsb_radar", /*readOnly=*/false);
     state = hasStoredCredentials() ? State::Idle : State::NoCredentials;
+
+    // Some routers put certain networks (guest networks especially) on
+    // channel 12 or 13. ESP32's default regulatory/country setting can
+    // scan those channels too conservatively and miss the beacon - other
+    // ESP32 tools (Bruce, etc.) explicitly widen this, which is likely why
+    // they can see networks this app couldn't. Explicitly allow the full
+    // EU channel range (1-13) before any scanning happens.
+    WiFi.mode(WIFI_STA); // must init the WiFi driver before touching country config
+    wifi_country_t country = {};
+    strncpy(country.cc, "DE", sizeof(country.cc));
+    country.schan = 1;
+    country.nchan = 13;
+    country.policy = WIFI_COUNTRY_POLICY_MANUAL;
+    esp_wifi_set_country(&country);
 }
 
 bool hasStoredCredentials() {
