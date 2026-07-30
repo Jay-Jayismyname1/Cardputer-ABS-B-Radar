@@ -14,6 +14,8 @@
 #include "wifi_setup_screen.h"
 #include "settings_menu.h"
 #include "location_manager.h"
+#include "units.h"
+#include "flight_logbook.h"
 
 namespace {
     uint32_t lastFetchMs = 0;
@@ -143,6 +145,11 @@ namespace {
 }
 
 void setup() {
+    // Needed for the Serial Monitor to show anything at all on this
+    // ESP32-S3 board - without an explicit begin() here, Serial output
+    // never reaches the USB port.
+    Serial.begin(115200);
+
     auto cfg = M5.config();
     M5Cardputer.begin(cfg, true);
 
@@ -159,6 +166,8 @@ void setup() {
     WifiSetupScreen::init();
     SettingsMenu::init();
     LocationManager::init();
+    Units::init();
+    FlightLogbook::init();
 
     // Starts the background FreeRTOS task (pinned to core 0) that
     // AdsbClient::requestFetch()/resultReady()/consumeResult() talk to
@@ -171,7 +180,8 @@ void setup() {
         SdStorage::seedDefaultDataFiles();
     }
     // If SdStorage::init() fails, the radar still runs fine — airline/seat
-    // fields just stay blank. Nothing else depends on the SD card being present.
+    // fields just stay blank, and the flight logbook simply stays off
+    // (FlightLogbook::update() checks SdStorage::isMounted() itself).
 
     // "Kinectputer-style" SD credential loading
     if (WifiMgr::loadCredentialsFromSd()) {
@@ -329,6 +339,7 @@ void loop() {
         if (result.ok) {
             AircraftTable::postFetchUpdate(lastFetchHomeLat, lastFetchHomeLon);
             if (selectedIndex >= AircraftTable::validCount()) selectedIndex = 0;
+            FlightLogbook::update(AircraftTable::raw(), AircraftTable::validCount());
         }
 
         // Un-gated from `result.ok`, same as before: needs to run even on a

@@ -18,6 +18,17 @@ namespace {
     uint8_t connectAttemptIndex = 0;
     bool cascadeOnFailure = false; // true only during beginAutoConnect()
 
+    // Once a background auto-connect cascade exhausts every saved network
+    // and lands in State::Failed, we don't want to just give up forever -
+    // the outage might be temporary (e.g. the router itself rebooting).
+    // update() retries the whole cascade again after this interval, but
+    // only for cascading (background) attempts - not for a manual
+    // beginConnect() from the WiFi setup screen, where the user is
+    // actively watching a specific attempt and an unexpected background
+    // retry would be confusing.
+    uint32_t lastFailedMs = 0;
+    constexpr uint32_t RECONNECT_RETRY_INTERVAL_MS = 30000;
+
     String slotKeySsid(uint8_t i) { return "ssid" + String(i); }
     String slotKeyPass(uint8_t i) { return "pass" + String(i); }
 
@@ -54,6 +65,7 @@ namespace {
         String ssid = prefs.getString(slotKeySsid(index).c_str(), "");
         if (ssid.length() == 0) {
             state = State::Failed;
+            lastFailedMs = millis();
             return;
         }
         String pass = prefs.getString(slotKeyPass(index).c_str(), "");
@@ -183,6 +195,30 @@ void beginAutoConnect() {
 }
 
 void update() {
+    // Was connected, but the link is actually gone now (router rebooted,
+    // out of range, etc.) - the ESP32 WiFi driver doesn't auto-recover on
+    // its own here, so kick off a fresh background reconnect cascade
+    // through all saved networks instead of silently staying in a
+    // "Connected" state that no longer reflects reality.
+    if (state == State::Connected) {
+        if (WiFi.status() != WL_CONNECTED) {
+            beginAutoConnect();
+        }
+        return;
+    }
+
+    // A previous background cascade exhausted every saved network. Rather
+    // than giving up forever, try the whole list again periodically -
+    // covers a temporarily-down router/AP that comes back later. Only
+    // applies to cascading (background) attempts, not a manual
+    // beginConnect() from the WiFi setup screen.
+    if (state == State::Failed) {
+        if (cascadeOnFailure && millis() - lastFailedMs > RECONNECT_RETRY_INTERVAL_MS) {
+            beginAutoConnect();
+        }
+        return;
+    }
+
     if (state != State::Connecting) return;
 
     if (WiFi.status() == WL_CONNECTED) {
@@ -202,6 +238,7 @@ void update() {
             }
         }
         state = State::Failed; // out of networks to try (or not cascading at all)
+        lastFailedMs = millis();
     }
 }
 

@@ -1,6 +1,7 @@
 #include "display_radar.h"
 #include "radar_math.h"
 #include "config.h"
+#include "units.h"
 #include <M5Cardputer.h>
 
 namespace DisplayRadar {
@@ -158,9 +159,11 @@ namespace {
             radarSprite.drawString(line1, 4, panelY + 4);
             radarSprite.setTextColor(TFT_WHITE); // reset for the lines below
 
+            char distBuf[12];
+            Units::formatDistance(a.distanceKm, distBuf, sizeof(distBuf));
             char line2[64];
-            snprintf(line2, sizeof(line2), "%.0fkm  ALT %ldft  VS %+dfpm  HDG %03.0f",
-                     a.distanceKm, (long)a.altBaroFt, a.vertRateFtMin, a.headingDeg);
+            snprintf(line2, sizeof(line2), "%s  ALT %ldft  VS %+dfpm  HDG %03.0f",
+                     distBuf, (long)a.altBaroFt, a.vertRateFtMin, a.headingDeg);
             radarSprite.drawString(line2, 4, panelY + 16);
 
             char line3[64];
@@ -218,7 +221,7 @@ namespace {
 
         // Range scale — bottom-left corner, just above the HUD panel divider.
         char rangeLabel[16];
-        snprintf(rangeLabel, sizeof(rangeLabel), "%.0fkm", Config::RANGE_STEPS_KM[rangeIndex]);
+        Units::formatDistance(Config::RANGE_STEPS_KM[rangeIndex], rangeLabel, sizeof(rangeLabel));
         radarSprite.setTextDatum(bottom_left);
         radarSprite.setTextColor(TFT_DARKGREEN);
         radarSprite.drawString(rangeLabel, 4, panelY - 4);
