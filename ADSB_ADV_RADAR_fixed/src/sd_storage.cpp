@@ -114,7 +114,45 @@ namespace {
         "CL60,9\n"
         "H160,8\n"
         "EC35,6\n"
-        "EC45,8\n";
+        "EC45,8\n"
+        // --- Ergänzt: gängige Kleinflugzeuge, Business Jets, ältere
+        // Airliner und Hubschrauber, die vorher fehlten (z.B. C152). ---
+        "C152,2\n"
+        "C150,2\n"
+        "DA40,4\n"
+        "DA42,4\n"
+        "DA62,7\n"
+        "SR22,4\n"
+        "SR20,4\n"
+        "PA34,6\n"
+        "PA44,4\n"
+        "PA31,8\n"
+        "BE20,9\n"
+        "BE9L,8\n"
+        "C208,9\n"
+        "C210,4\n"
+        "C525,7\n"
+        "C560,8\n"
+        "C680,9\n"
+        "C750,8\n"
+        "GLF4,14\n"
+        "GLF6,14\n"
+        "FA7X,12\n"
+        "FA8X,14\n"
+        "E135,37\n"
+        "E145,50\n"
+        "E120,30\n"
+        "B733,149\n"
+        "B734,168\n"
+        "B735,132\n"
+        "MD82,155\n"
+        "L410,19\n"
+        "R44,4\n"
+        "R66,5\n"
+        "H125,5\n"
+        "AS50,5\n"
+        "TB20,4\n"
+        "TB10,4\n";
 
     bool ensureDir(const char* path) {
         if (SD.exists(path)) return true;
@@ -152,7 +190,10 @@ void seedDefaultDataFiles() {
 }
 
 void logEvent(const char* csvLine) {
-    if (!mounted) return;
+    if (!mounted) {
+        Serial.println("[SD] logEvent: Karte nicht gemountet");
+        return;
+    }
 
     time_t now = time(nullptr);
     struct tm tmNow;
@@ -162,9 +203,13 @@ void logEvent(const char* csvLine) {
              Config::SD_LOG_DIR, tmNow.tm_year + 1900, tmNow.tm_mon + 1, tmNow.tm_mday);
 
     File f = SD.open(filename, FILE_APPEND);
-    if (!f) return;
+    if (!f) {
+        Serial.printf("[SD] logEvent: konnte Datei nicht oeffnen: %s\n", filename);
+        return;
+    }
     f.println(csvLine);
     f.close();
+    Serial.printf("[SD] logEvent: geschrieben nach %s -> %s\n", filename, csvLine);
 }
 
 }

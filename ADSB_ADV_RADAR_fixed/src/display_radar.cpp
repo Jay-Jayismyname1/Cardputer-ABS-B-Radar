@@ -1,6 +1,7 @@
 #include "display_radar.h"
 #include "radar_math.h"
 #include "config.h"
+#include "units.h"
 #include <M5Cardputer.h>
 
 namespace DisplayRadar {
@@ -22,7 +23,7 @@ namespace {
     void drawRadarBase() {
         radarSprite.fillScreen(TFT_BLACK);
 
- 
+
         for (int i = 1; i <= 3; i++) {
             radarSprite.drawCircle(centerX, centerY, (outerRadiusPx * i) / 3, TFT_DARKGREEN);
         }
@@ -91,8 +92,18 @@ namespace {
         auto pt = RadarMath::toScreen(polar, centerX, centerY, outerRadiusPx,
                                        Config::RANGE_STEPS_KM[rangeIndex]);
 
-        uint16_t color = altitudeColor(a.altBaroFt);
+        bool emergency = a.isEmergencySquawk();
+        uint16_t color = emergency ? TFT_RED : altitudeColor(a.altBaroFt);
         drawHeadingArrow(pt.x, pt.y, a.headingDeg, color, selected);
+
+        if (emergency) {
+            // Pulsing red ring so an emergency aircraft stands out at a
+            // glance, distinct from the plain white "selected" ring.
+            bool pulseOn = (millis() / 300) % 2 == 0;
+            if (pulseOn) {
+                radarSprite.drawCircle(pt.x, pt.y, 11, TFT_RED);
+            }
+        }
 
         // Callsign label — small, offset above the blip
         radarSprite.setTextColor(color);
@@ -100,6 +111,14 @@ namespace {
         radarSprite.setTextSize(1);
         const char* label = a.callsign[0] ? a.callsign : a.hex;
         radarSprite.drawString(label, pt.x, pt.y - 9);
+
+        if (emergency) {
+            // Squawk code shown right under the blip, so it reads as
+            // "why is this red" (7500/7600/7700) rather than just "red".
+            radarSprite.setTextColor(TFT_RED);
+            radarSprite.setTextDatum(top_center);
+            radarSprite.drawString(a.squawk, pt.x, pt.y + 9);
+        }
     }
 
     // Returns white/orange/red based on battery percentage thresholds.
@@ -124,16 +143,27 @@ namespace {
             radarSprite.drawString("No traffic in range", 4, panelY + 4);
         } else {
             const Aircraft& a = list[selectedIndex];
-            char line1[64];
-            snprintf(line1, sizeof(line1), "%s  %s  %s",
-                     a.callsign[0] ? a.callsign : "-------",
-                     a.reg[0] ? a.reg : "REG?",
-                     a.airlineName[0] ? a.airlineName : "");
-            radarSprite.drawString(line1, 4, panelY + 4);
+            bool emergency = a.isEmergencySquawk();
 
+            char line1[64];
+            if (emergency) {
+                snprintf(line1, sizeof(line1), "EMERGENCY %s  SQUAWK %s",
+                         a.callsign[0] ? a.callsign : a.hex, a.squawk);
+            } else {
+                snprintf(line1, sizeof(line1), "%s  %s  %s",
+                         a.callsign[0] ? a.callsign : "-------",
+                         a.reg[0] ? a.reg : "REG?",
+                         a.airlineName[0] ? a.airlineName : "");
+            }
+            radarSprite.setTextColor(emergency ? TFT_RED : TFT_WHITE);
+            radarSprite.drawString(line1, 4, panelY + 4);
+            radarSprite.setTextColor(TFT_WHITE); // reset for the lines below
+
+            char distBuf[12];
+            Units::formatDistance(a.distanceKm, distBuf, sizeof(distBuf));
             char line2[64];
-            snprintf(line2, sizeof(line2), "%.0fkm  ALT %ldft  VS %+dfpm  HDG %03.0f",
-                     a.distanceKm, (long)a.altBaroFt, a.vertRateFtMin, a.headingDeg);
+            snprintf(line2, sizeof(line2), "%s  ALT %ldft  VS %+dfpm  HDG %03.0f",
+                     distBuf, (long)a.altBaroFt, a.vertRateFtMin, a.headingDeg);
             radarSprite.drawString(line2, 4, panelY + 16);
 
             char line3[64];
@@ -156,6 +186,20 @@ namespace {
         radarSprite.setTextColor(TFT_WHITE);
         radarSprite.drawString(locationLabel, dotX + dotR + 6, dotY);
 
+        // Top-center: blinking "EMERGENCY" banner whenever any tracked
+        // aircraft is squawking 7500/7600/7700 - shown regardless of
+        // which aircraft is currently selected, so it isn't missed just
+        // because you had Tab'd over to look at something else.
+        bool anyEmergency = false;
+        for (uint8_t i = 0; i < count; i++) {
+            if (list[i].valid && list[i].isEmergencySquawk()) { anyEmergency = true; break; }
+        }
+        if (anyEmergency && (millis() / 300) % 2 == 0) {
+            radarSprite.setTextDatum(top_center);
+            radarSprite.setTextColor(TFT_RED);
+            radarSprite.drawString("EMERGENCY", screenW / 2, 2);
+        }
+
         // Top-right: battery pill, aircraft count to its left.
         char battLabel[8];
         snprintf(battLabel, sizeof(battLabel), "%d%%", batteryPct);
@@ -177,7 +221,7 @@ namespace {
 
         // Range scale — bottom-left corner, just above the HUD panel divider.
         char rangeLabel[16];
-        snprintf(rangeLabel, sizeof(rangeLabel), "%.0fkm", Config::RANGE_STEPS_KM[rangeIndex]);
+        Units::formatDistance(Config::RANGE_STEPS_KM[rangeIndex], rangeLabel, sizeof(rangeLabel));
         radarSprite.setTextDatum(bottom_left);
         radarSprite.setTextColor(TFT_DARKGREEN);
         radarSprite.drawString(rangeLabel, 4, panelY - 4);

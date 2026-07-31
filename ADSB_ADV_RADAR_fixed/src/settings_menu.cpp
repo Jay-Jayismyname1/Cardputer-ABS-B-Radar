@@ -5,6 +5,8 @@
 #include "neopixel_status.h"
 #include "proximity_alert.h"
 #include "location_manager.h"
+#include "units.h"
+#include "flight_logbook.h"
 #include "config.h"
 #include <M5Cardputer.h>
 #include <Preferences.h>
@@ -33,10 +35,18 @@ namespace {
 
     void tone(uint16_t hz, uint16_t ms) { M5Cardputer.Speaker.tone(hz, ms); }
 
-    enum class Item : uint8_t { Wifi = 0, Location, DisplayBrightness, LedBrightness, Volume, ProxBeep, Count };
+    enum class Item : uint8_t { Wifi = 0, Location, DisplayBrightness, LedBrightness, Volume, ProxBeep, Units, Logbook, Count };
     Item selected = Item::Wifi;
 
+    // How many item rows are scrolled past the top of the visible list -
+    // the item list is now taller than the small Cardputer screen (7+
+    // rows once Units/Flight Logbook were added), so render() keeps the
+    // currently selected row scrolled into view using this offset.
+    uint8_t scrollOffset = 0;
+
     bool inWifiSubscreen = false;
+    bool inWifiManage = false;
+    uint8_t wifiManageSelected = 0; // 0..savedCount-1 = saved networks, savedCount = "Add network"
     bool inManualLocationEntry = false;
     uint8_t manualEntryField = 0; // 0 = lat, 1 = lon
     char manualLatBuf[16] = "";
@@ -58,6 +68,8 @@ namespace {
             case Item::LedBrightness:     return "LED Brightness";
             case Item::Volume:            return "Volume";
             case Item::ProxBeep:          return "Proximity Beep";
+            case Item::Units:             return "Units";
+            case Item::Logbook:           return "Flight Logbook";
             default:                       return "";
         }
     }
@@ -103,7 +115,9 @@ void init() {
 
 void onEnter() {
     selected = Item::Wifi;
+    scrollOffset = 0;
     inWifiSubscreen = false;
+    inWifiManage = false;
     inManualLocationEntry = false;
     done = false;
 }
@@ -169,6 +183,58 @@ void handleWord(const char* chars, uint8_t count, bool fnHeld, bool shiftHeld,
         return;
     }
 
+    if (inWifiManage) {
+        uint8_t savedCount = WifiMgr::savedNetworkCount();
+        uint8_t totalRows = savedCount + 1; // last row = "+ Add network"
+
+        bool hasEnter = false, hasEsc = false, hasBackspace = false;
+        for (uint8_t i = 0; i < hidKeyCount; i++) {
+            if (hidKeys[i] == HID_ENTER) hasEnter = true;
+            if (hidKeys[i] == HID_ESC) hasEsc = true;
+            if (hidKeys[i] == HID_BACKSPACE) hasBackspace = true;
+        }
+        bool hasBacktick = false;
+        for (uint8_t i = 0; i < count; i++) if (chars[i] == '`') hasBacktick = true;
+
+        if (hasEsc || hasBacktick) {
+            tone(TONE_CLOSE_HZ, TONE_CLOSE_MS);
+            inWifiManage = false;
+            return;
+        }
+
+        for (uint8_t i = 0; i < count; i++) {
+            if (chars[i] == ';') { // up
+                wifiManageSelected = (wifiManageSelected + totalRows - 1) % totalRows;
+                tone(TONE_NAV_HZ, TONE_NAV_MS);
+            } else if (chars[i] == '.') { // down
+                wifiManageSelected = (wifiManageSelected + 1) % totalRows;
+                tone(TONE_NAV_HZ, TONE_NAV_MS);
+            }
+        }
+
+        if (hasBackspace && wifiManageSelected < savedCount) {
+            // Forget the selected saved network - no confirmation prompt,
+            // easy to just re-add it if you didn't mean to.
+            WifiMgr::forgetNetwork(wifiManageSelected);
+            WifiMgr::saveCredentialsToSdIfMounted(); // keep wifi.txt in sync, if an SD card is present
+            tone(TONE_ADJUST_HZ, TONE_ADJUST_MS);
+            uint8_t newTotalRows = WifiMgr::savedNetworkCount() + 1;
+            if (wifiManageSelected >= newTotalRows) wifiManageSelected = newTotalRows - 1;
+            return;
+        }
+
+        if (hasEnter && wifiManageSelected == savedCount) {
+            // "+ Add network" row - launch the familiar scan/connect flow.
+            tone(TONE_CONFIRM_HZ, TONE_CONFIRM_MS);
+            inWifiManage = false;
+            inWifiSubscreen = true;
+            WifiSetupScreen::onEnter();
+        }
+        // Enter on an existing saved network row currently does nothing -
+        // only Del (forget) acts on those rows.
+        return;
+    }
+
     if (inWifiSubscreen) {
         WifiSetupScreen::handleWord(chars, count, fnHeld, shiftHeld, hidKeys, hidKeyCount);
         if (WifiSetupScreen::isDone()) {
@@ -221,6 +287,12 @@ void handleWord(const char* chars, uint8_t count, bool fnHeld, bool shiftHeld,
                 case Item::ProxBeep:
                     ProximityAlert::setBeepEnabled(!ProximityAlert::isBeepEnabled());
                     break;
+                case Item::Units:
+                    Units::toggle();
+                    break;
+                case Item::Logbook:
+                    FlightLogbook::setEnabled(!FlightLogbook::isEnabled());
+                    break;
                 default: break;
             }
             tone(TONE_ADJUST_HZ, TONE_ADJUST_MS);
@@ -244,6 +316,12 @@ void handleWord(const char* chars, uint8_t count, bool fnHeld, bool shiftHeld,
                 case Item::ProxBeep:
                     ProximityAlert::setBeepEnabled(!ProximityAlert::isBeepEnabled());
                     break;
+                case Item::Units:
+                    Units::toggle();
+                    break;
+                case Item::Logbook:
+                    FlightLogbook::setEnabled(!FlightLogbook::isEnabled());
+                    break;
                 default: break;
             }
             tone(TONE_ADJUST_HZ, TONE_ADJUST_MS);
@@ -255,8 +333,8 @@ void handleWord(const char* chars, uint8_t count, bool fnHeld, bool shiftHeld,
 
     if (hasEnter && selected == Item::Wifi) {
         tone(TONE_CONFIRM_HZ, TONE_CONFIRM_MS);
-        inWifiSubscreen = true;
-        WifiSetupScreen::onEnter();
+        inWifiManage = true;
+        wifiManageSelected = 0;
     }
     if (hasEnter && selected == Item::Location) {
         tone(TONE_CONFIRM_HZ, TONE_CONFIRM_MS);
@@ -283,6 +361,48 @@ void render() {
     if (!spriteReady) return;
 
     auto& d = settingsSprite;
+
+    if (inWifiManage) {
+        d.fillScreen(TFT_BLACK);
+        d.setTextSize(1);
+        d.setTextDatum(top_left);
+        d.setTextColor(TFT_GREEN);
+        d.setCursor(4, 4);
+        d.println("Manage WiFi networks");
+        d.drawFastHLine(0, 20, d.width(), TFT_DARKGREEN);
+
+        uint8_t savedCount = WifiMgr::savedNetworkCount();
+        uint8_t totalRows = savedCount + 1;
+        int16_t y = 28;
+        int16_t rowH = d.fontHeight() + 2;
+
+        if (savedCount == 0) {
+            d.setTextColor(TFT_DARKGREEN, TFT_BLACK);
+            d.setCursor(4, y);
+            d.println("No networks saved yet.");
+            y += rowH;
+        }
+
+        for (uint8_t i = 0; i < totalRows; i++) {
+            bool isSelected = (i == wifiManageSelected);
+            if (isSelected) d.fillRect(0, y, d.width(), rowH, TFT_GREEN);
+            d.setTextColor(isSelected ? TFT_BLACK : TFT_WHITE, isSelected ? TFT_GREEN : TFT_BLACK);
+            d.setCursor(4, y + 1);
+            if (i < savedCount) {
+                d.printf(" %s", WifiMgr::savedNetworkSsid(i).c_str());
+            } else {
+                d.print(" + Add network");
+            }
+            y += rowH;
+        }
+
+        d.setTextColor(TFT_DARKGREEN, TFT_BLACK);
+        d.setCursor(2, d.height() - d.fontHeight() - 1);
+        d.print(";/.=move Ent=add Del=forget `=back");
+
+        d.pushSprite(0, 0);
+        return;
+    }
 
     if (inManualLocationEntry) {
         d.fillScreen(TFT_BLACK);
@@ -327,8 +447,32 @@ void render() {
 
     int16_t rowH = lineH + 1;
     int16_t screenW = d.width();
+    int16_t listTop = y;
+    int16_t footerH = lineH + 2; // reserved space for the footer hint line
+    int16_t listBottom = d.height() - footerH;
 
-    for (uint8_t i = 0; i < static_cast<uint8_t>(Item::Count); i++) {
+    uint8_t totalItems = static_cast<uint8_t>(Item::Count);
+    uint8_t selectedIdx = static_cast<uint8_t>(selected);
+
+    uint8_t maxVisibleRows = (listBottom - listTop) / rowH;
+    if (maxVisibleRows < 1) maxVisibleRows = 1;
+
+    // Keep the selected row scrolled into view - the item list is taller
+    // than the visible area now that Units/Flight Logbook were added, so
+    // without this the last entries would be drawn off the bottom edge
+    // and be unreadable even though they were still technically selectable.
+    if (selectedIdx < scrollOffset) {
+        scrollOffset = selectedIdx;
+    } else if (selectedIdx >= scrollOffset + maxVisibleRows) {
+        scrollOffset = selectedIdx - maxVisibleRows + 1;
+    }
+    if (totalItems > maxVisibleRows && scrollOffset + maxVisibleRows > totalItems) {
+        scrollOffset = totalItems - maxVisibleRows;
+    } else if (totalItems <= maxVisibleRows) {
+        scrollOffset = 0;
+    }
+
+    for (uint8_t i = scrollOffset; i < totalItems && i < scrollOffset + maxVisibleRows; i++) {
         Item it = static_cast<Item>(i);
         bool isSelected = (it == selected);
 
@@ -367,10 +511,30 @@ void render() {
             case Item::ProxBeep:
                 d.printf("Prox Beep: %s", ProximityAlert::isBeepEnabled() ? "On" : "Off");
                 break;
+            case Item::Units:
+                d.printf("Units: %s", Units::suffix());
+                break;
+            case Item::Logbook:
+                d.printf("Logbook: %s", FlightLogbook::isEnabled() ? "On" : "Off");
+                break;
             default: break;
         }
         y += rowH;
     }
+
+    // Small scroll indicators so it's obvious there's more above/below,
+    // rather than it just looking like the list quietly ends.
+    if (scrollOffset > 0) {
+        d.setTextDatum(top_right);
+        d.setTextColor(TFT_DARKGREEN, TFT_BLACK);
+        d.drawString("^", screenW - 4, listTop);
+    }
+    if (scrollOffset + maxVisibleRows < totalItems) {
+        d.setTextDatum(bottom_right);
+        d.setTextColor(TFT_DARKGREEN, TFT_BLACK);
+        d.drawString("v", screenW - 4, listBottom - 1);
+    }
+    d.setTextDatum(top_left);
 
     // Footer pinned to the bottom edge rather than relative to the item
     // list, so it can't collide with rows above even as row count/height
@@ -380,7 +544,7 @@ void render() {
     if (selected == Item::Location) {
         d.print(";/.=move m=manual");
     } else if (selected == Item::Wifi) {
-        d.print(";/.=move Ent=open");
+        d.print(";/.=move Ent=manage");
     } else {
         d.print(";/.=move ,//=adjust");
     }
